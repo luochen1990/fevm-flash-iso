@@ -61,6 +61,14 @@ def stage_actions(spec: BuildSpec, summary: FirmwareSummary, shell_efi: Path,
             actions.append(
                 CopyAction(dest_rel=f"{spec.payload_dir}/uiset.ini", src_file=layout.ec.uiset_ini)
             )
+        # ChecksumF.txt 随盘分发: "供人工比对"的信息跟着 ISO 走 (n-5)
+        if layout.ec.checksum_txt is not None:
+            actions.append(
+                CopyAction(
+                    dest_rel=f"{spec.payload_dir}/{layout.ec.checksum_txt.name}",
+                    src_file=layout.ec.checksum_txt,
+                )
+            )
     return tuple(actions)
 
 

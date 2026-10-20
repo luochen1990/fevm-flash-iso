@@ -65,6 +65,7 @@ def test_golden_keep_stage_layout(pkg: Path, out_dir: Path) -> None:
         "ec": [
             "EFI/BOOT/BOOTX64.EFI", "startup.nsh", "README.txt",
             "EC/FEC64.NSH", "EC/ifu.efi", "EC/uiset.ini", "EC/EC_TESTX1_V9_4_0_1_29F.bin",
+            "EC/ChecksumF.txt",  # n-5: 随盘分发, 供人工比对
         ],
     }
     for kind, rels in fat_specs.items():

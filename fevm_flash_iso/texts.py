@@ -9,9 +9,12 @@
 # 坑 3: fs 设备号不固定 (实测 Ventoy 场景 ISO 挂在 FS1), 必须用
 #       fs0..fs9 探测循环。
 # 坑 4: 行尾用 CRLF, 与厂商脚本一致。
+# 坑 5: 循环变量只能用单个 ASCII 字母 (EDK2 For.c 强制校验), 且必须与
+#       厂商脚本错开 —— 厂商 nFlash.nsh 用 %a, 这里用 %z (m-9: 同名会
+#       被内层脚本覆盖, 多字符名则直接 "Invalid variable name" 拒绝)。
 #
-# 允许的命令集: @echo -off / echo / stall / for %a run (0 9) / endfor /
-# if exist ... then / endif / fs%a: / cd / 厂商脚本调用。
+# 允许的命令集: @echo -off / echo / stall / for %z run (0 9) / endfor /
+# if exist ... then / endif / fs%z: / cd / 厂商脚本调用。
 
 """startup.nsh 与 README.txt 模板生成 (纯函数, CRLF)。"""
 
@@ -20,6 +23,7 @@ from collections.abc import Sequence
 from .model import BOOT_EFI_REL, README_NAME, STARTUP_NSH_NAME, BuildSpec
 
 _SEPARATOR = "x" * 68
+_LOOP_VAR = "z"
 
 
 def render_startup_nsh(
@@ -41,10 +45,10 @@ def render_startup_nsh(
         "echo Auto start in 5 seconds ...",
         "stall 5000000",
         "echo Searching flash payload on fs0 .. fs9 ...",
-        "for %a run (0 9)",
-        f"  if exist fs%a:\\{spec.probe_path} then",
-        "    echo Found payload on fs%a. Launching vendor flash script.",
-        "    fs%a:",
+        f"for %{_LOOP_VAR} run (0 9)",
+        f"  if exist fs%{_LOOP_VAR}:\\{spec.probe_path} then",
+        f"    echo Found payload on fs%{_LOOP_VAR}. Launching vendor flash script.",
+        f"    fs%{_LOOP_VAR}:",
         f"    cd {spec.payload_dir}",
         f"    {spec.payload_entry}",
         "    echo Vendor flash script returned. Review its output above.",

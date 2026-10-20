@@ -34,12 +34,28 @@ def test_startup_nsh_skeleton(target: FlashTarget) -> None:
     text = _startup(target)
     assert text.startswith("@echo -off")
     assert "stall 5000000" in text  # 5 秒倒计时
-    assert "for %a run (0 9)" in text  # fs 设备号探测循环
+    assert "for %z run (0 9)" in text  # fs 设备号探测循环
     assert "endfor" in text
-    assert f"if exist fs%a:\\{spec.probe_path} then" in text
+    assert f"if exist fs%z:\\{spec.probe_path} then" in text
     assert f"    cd {spec.payload_dir}" in text
     assert f"    {spec.payload_entry}" in text
     assert "goto" not in text  # 坑: 跨块 goto 语义不稳
+
+
+@pytest.mark.parametrize("target", list(FlashTarget))
+def test_startup_nsh_loop_var_decoupled_from_vendor(target: FlashTarget) -> None:
+    """m-9: 循环变量与厂商 nFlash.nsh 的 %a 解耦, 用单字母冷门名 %z.
+
+    约束依据 EDK2 For.c: 变量必须 % + 单个字母 (多字符名直接被拒);
+    %a 会与厂商脚本 for %a in *bin 冲突。
+    """
+    text = _startup(target)
+    assert "%a" not in text
+    assert "fs%z:" in text
+    for line in text.split("\r\n"):
+        stripped = line.removeprefix("for ")
+        if stripped != line:
+            assert stripped.startswith("%z ")
 
 
 @pytest.mark.parametrize("target", list(FlashTarget))
