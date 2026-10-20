@@ -54,33 +54,48 @@ CLI(argv)
 | `validate.py` | 内容层校验 #2–#7，产出 `FirmwareSummary` | 修改任何文件 |
 | `shell.py` | UEFI Shell 定位（覆盖参数/内置资产）+ PE 自检 | 构建镜像 |
 | `texts.py` | `startup.nsh`/`README.txt` 生成（纯函数，EDK2 坑集中地） | 执行 IO |
-| `cmd.py` | subprocess 封装 + 外部工具前置检查 | 业务逻辑 |
+| `cmd.py` | subprocess 封装（300s 超时）+ 外部工具前置检查 | 业务逻辑 |
 | `stage.py` | `CopyAction` 声明式动作表 -> stage 源树；期望路径清单 | 调外部命令 |
 | `fatimg.py` | FAT16 镜像构建（truncate/mkfs.vfat/mcopy） | 改参数语义 |
-| `iso.py` | xorriso 组装 + 产物自检（#8）+ FAT 镜像清单 | 校验输入包 |
+| `iso.py` | xorriso 组装（临时名）+ 产物自检（内嵌副本哈希/Platform Id/mdir） | 校验输入包 |
 | `report.py` | 全部用户可见文本 | 业务逻辑 |
-| `cli.py` | 参数集中预处理 + 管线编排 + 退出码 | 散落的路径解析 |
+| `cli.py` | 参数集中预处理 + 管线编排 + 原子发布与失败兜底清理 + 退出码契约 | 散落的路径解析 |
 | `synth.py` | 合成固件包生成（仅测试/demo） | 进刷写管线；包含真实固件 |
 
 ## 校验规则清单（fail fast，失败即退出码 2）
 
 | # | 规则 | 实现位置 |
 | --- | --- | --- |
-| 1 | 恰好一个 BIOS 目录（`*.bin`+`Tools/AfuEfix64.efi`+`Tools/nFlash.nsh`）与恰好一个 EC 目录（`EC_*.bin`+`ifu.efi`+`FEC64.NSH`），按内容识别，支持显式覆盖 | `discover.py` |
-| 2 | 所有被消费的 `.efi` 是 PE/COFF 且 Machine=0x8664 | `pecoff.py`（validate 调用，含 Shell.efi） |
-| 3 | `FEC64.NSH` 引用的 bin 名 ∈ 目录内实际 bin 名（按 `EC_...V...F.bin` token 集合；脚本注释行允许有旧名） | `validate._check_fec_ref` |
+| 1 | 恰好一个 BIOS 目录（`*.bin`+`Tools/AfuEfix64.efi`+`Tools/nFlash.nsh`）与恰好一个 EC 目录（`EC_*.bin`+`ifu.efi`+`FEC64.NSH`），按内容识别，支持显式覆盖；歧义判定带完整目录路径，且先做内容指纹预筛（无指纹的目录不参与另一类的 bin 歧义判定） | `discover.py` |
+| 2 | 所有被消费的 `.efi` 是 PE/COFF 且 Machine=0x8664，OptionalHeader Magic=0x20B（PE32+），SizeOfHeaders ≤ 文件长度（截断/伪体拒绝） | `pecoff.py`（validate 调用，含 Shell.efi） |
+| 3 | `FEC64.NSH` 双通道交叉校验：严格通道——每条非注释 `ifu <name>` 行引用的文件必须存在于目录；宽松通道——实际 bin 名 ∈ 全文 EC bin token 集合（兼容厂商注释头引用旧名形态） | `validate._check_fec_ref` |
 | 4 | `nFlash.nsh` 内容引用 `.\Tools\AfuEfix64.efi` | `validate._check_nflash_ref` |
-| 5 | BIOS bin ≥ 8 MiB（实测 32 MiB）；EC bin ∈ {64K,128K,256K,512K}（实测 128K） | `validate._check_bin_sizes` |
-| 6 | 机型/BIOS 版本/内嵌 EC 版本/EC 包版本解析展示 + 软一致性（release 尾段比较，不一致仅 warning） | `filenames.py` + `validate.py` |
-| 7 | `ChecksumF.txt` 存在则解析 `[bin] checksum : 8hex` 并提示"供人工比对"（ITE 私有算法未知，不硬校验） | `validate._checksum_info` |
-| 8 | 产物自检：`xorriso -indev` 可读 + El Torito EFI 记录（`/efi.img`）+ `mdir` 逐路径检查 FAT 镜像 | `iso.verify_iso` |
+| 5 | BIOS bin ≥ 8 MiB（实测 32 MiB）且 < FAT 容量 × 0.9（实测 64 MiB）；EC bin ∈ {64K,128K,256K,512K}（实测 128K） | `validate._check_bin_sizes`（容量由 cli 从 `BUILD_SPECS` 注入） |
+| 6 | 机型/BIOS 版本/内嵌 EC 版本/EC 包版本解析展示 + 软一致性（release 尾段比较，不一致仅 warning）；BIOS 版本字段多候选时**硬失败**（不错标 ISO 名） | `filenames.py` + `validate.py` |
+| 7 | `ChecksumF.txt` 存在则解析 `[bin] checksum : 8hex` 并提示"供人工比对"（ITE 私有算法未知，不硬校验）；文件随 EC 盘分发 | `validate._checksum_info` + `stage.py` |
+| 8 | 产物自检（对象 = **成品 ISO 的内嵌副本**）：`xorriso -indev` 可读 + El Torito Platform Id 行为 EFI/UEFI 且引导镜像为 `/efi.img`（正则解析，非子串）；`-osirrox` 抽回内嵌 `efi.img` 与源镜像 SHA-256 比对；对内嵌副本逐路径 `mdir`。产物**原子发布**：先写 `<名>.iso.tmp`，自检通过后 `os.replace` 到最终名；构建失败时清理本次运行全部 `.iso/.tmp` 残留并报告作废清单 | `iso.py` + `cli.py` |
 
 每条失败信息都含「出了什么事 + 修复指引」两部分（`ValidationError.what/hint`）。
 
+## 退出码契约
+
+| 码 | 含义 |
+| --- | --- |
+| 0 | 成功：两个 ISO 均构建并通过自检后原子发布 |
+| 2 | 输入包/环境校验失败（ValidationError：结构/内容/工具缺失） |
+| 3 | 构建或自检失败（BuildError：外部工具失败/超时/自检不过/原子发布兜底清理），**含未预期的 I/O 错误（OSError 与子进程解码异常也归 3，不裸抛 traceback）** |
+
 ## 版本解析规约（正则不写死整串，只提取关键字段）
 
-- BIOS bin：`V(\d+\.\d+)` 取首个匹配为 BIOS 版本；`EC_V([\d.]+)` 为内嵌 EC 版本
-  （如 `..._S112_V1.06_..._EC_V0.1.29_20260720.bin`）。
+- BIOS bin：`(?<!EC_)V(\d+\.\d+)` 提取 BIOS 版本字段——负向后视排除
+  `EC_V` 前缀，防止把内嵌 EC 版本误读成 BIOS 版本；**过度排除是失败
+  安全的**：若机型名/字段恰好使全部 `V` 字段都被排除（如 `XXXEC_V1.06`
+  形），解析得到空集合 → 硬失败，绝不静默猜。
+- BIOS 版本**唯一性**：全部非 EC `V` 字段的取值集合必须恰有一个元素；
+  多个互不相同的候选 → 硬失败（防 ISO 文件名标错版本）；重复出现同一
+  值不算歧义。
+- 内嵌 EC 版本：`EC_V(\d+(?:\.\d+)+)`——显式数字段结构，不吃尾点
+  （`EC_V0.1.29_20260720.bin` → `0.1.29`，无尾点假警告）。
 - EC bin：`EC_(\w+?)_V(\d+(?:_\d+)+)(F?)\.bin`，下划线串转点分
   （`EC_FEVM_V9_4_0_1_29F.bin` → `9.4.0.1.29` + F 后缀）。
 - 机型：目录名首个 `_` 前的 token（BIOS 目录优先，EC 目录回退；不一致告警）。
@@ -93,14 +108,18 @@ CLI(argv)
 1. **echo 内容绝不能以 `-`、`=`、`/` 开头**——EDK2 echo 把首 token 当 flag
    解析，报 `echo: Unknown flag`。提示文本字母数字开头，分隔线用 `xxx…`。
 2. **不要用 goto 跳出 for 循环**——跨块 goto 语义不稳；用「目标路径唯一
-   命中」结构（`if exist fs%a:\<probe> then ... endif`）。
+   命中」结构（`if exist fs%z:\<probe> then ... endif`）。
 3. **fs 设备号不固定**——实测 Ventoy 场景 ISO 挂在 FS1；必须用
-   `for %a run (0 9)` 探测循环。
-4. 行尾 CRLF，与厂商脚本一致。
-5. 语法白名单：`@echo -off` / `echo` / `stall <微秒>` /
-   `for %a run (0 9)`…`endfor` / `if exist <path> then`…`endif` /
-   `fs%a:` / `cd` / 脚本调用。
-6. 布局常量（`0_Afu_Flash`、`EC`、`EFI/BOOT/BOOTX64.EFI`、`startup.nsh`）
+   `for %z run (0 9)` 探测循环。
+4. **for 循环变量只能用单个 ASCII 字母**（EDK2 `For.c` 强制校验
+   `%<字母>`，多字符名直接报 Invalid variable 被拒），且必须与厂商脚本
+   错开——厂商 `nFlash.nsh` 用 `for %a in *bin`，本模板用 **`%z`**
+   （同名会被内层脚本覆盖）。
+5. 行尾 CRLF，与厂商脚本一致。
+6. 语法白名单：`@echo -off` / `echo` / `stall <微秒>` /
+   `for %z run (0 9)`…`endfor` / `if exist <path> then`…`endif` /
+   `fs%z:` / `cd` / 脚本调用。
+7. 布局常量（`0_Afu_Flash`、`EC`、`EFI/BOOT/BOOTX64.EFI`、`startup.nsh`）
    集中在 `model.BUILD_SPECS`，与 `stage.py` 布局、`texts.py` 探测路径
    同源——改布局只改 model 一处。
 
@@ -112,7 +131,8 @@ $ mkfs.vfat -F 16 -s <4|1> -n <FEVMBIOS|FEVMEC> efi.img   # -s 显式几何, 见
 $ mcopy -i efi.img -s <stage 各顶层条目> ::
 $ xorriso -as mkisofs -quiet -volid <VOLID> -J -joliet-long \
     -eltorito-alt-boot -e efi.img -no-emul-boot \
-    -append_partition 2 0xEF efi.img -o <OUT>.iso isoroot/
+    -append_partition 2 0xEF efi.img -o <OUT>.iso.tmp isoroot/
+$ # 自检通过后: os.replace <OUT>.iso.tmp <OUT>.iso (原子发布, M-1)
 ```
 
 - xorriso 以 `isoroot/` 为工作目录执行（源参数 `.`），`efi.img` 用裸相对
@@ -121,6 +141,10 @@ $ xorriso -as mkisofs -quiet -volid <VOLID> -J -joliet-long \
 - `-s` 显式扇区/簇：dosfstools 4.2 的自动簇适配在 8 MiB 上选不出合法
   FAT16 参数（实测报 "too small or a too large filesystem"）；8 MiB 用
   `-s 1`（≈16K 簇），64 MiB 用 `-s 4`（≈32K 簇），跨版本可复现。
+- 外部命令统一 300 秒超时（`cmd.COMMAND_TIMEOUT_SECONDS`），超时转
+  BuildError（防工具卡死挂起 CLI）。
+- 构建前扫描输出目录既有 `*.iso` 并打印"旧版本产物"提醒（防 Ventoy
+  中新旧拿混）；同名重建不告警（将被原子替换）。
 
 ISO 内布局：
 
@@ -129,7 +153,7 @@ ISO 内布局：
   相对路径约定：nFlash.nsh 在当前目录找 `*.bin`、调 `.\Tools\AfuEfix64.efi`）
 - EC 盘：`EFI/BOOT/BOOTX64.EFI`、`startup.nsh`、`README.txt`、
   `EC/{EC bin, ifu.efi, FEC64.NSH, uiset.ini}`（FEC64.NSH 依赖当前目录的
-  ifu 和 bin）
+  ifu 和 bin）；包内存在 `ChecksumF.txt` 时一并放入 `EC/`（随盘供人工比对）
 
 ## UEFI Shell 资产
 
