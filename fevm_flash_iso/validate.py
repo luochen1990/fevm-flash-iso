@@ -28,6 +28,8 @@ from .pecoff import validate_efi_amd64
 
 # FEC64.NSH 中所有形如 EC bin 文件名的 token (含注释行中的引用)
 EC_BIN_REF_RE = re.compile(r"EC_\w+_V\d+(?:_\d+)*F?\.bin", re.IGNORECASE)
+# FEC64.NSH 中真正执行刷写的 ifu 命令行: ifu <bin名> [参数]
+IFU_LINE_RE = re.compile(r"(?im)^\s*ifu\s+(\S+)")
 # nFlash.nsh 对 AFU 工具的相对路径引用约定 (大小写不敏感)
 NFLASH_AFU_REF = "tools\\afuefix64.efi"
 
@@ -65,8 +67,13 @@ def _check_efi_files(layout: PackageLayout) -> None:
     validate_efi_amd64(layout.ec.ifu_efi, role="EC 刷写工具")
 
 
-def _check_bin_sizes(layout: PackageLayout) -> tuple[int, int]:
-    """校验清单 #5: BIOS bin >= 8MiB (实测 32MiB); EC bin in {64K,128K,256K,512K}."""
+def _check_bin_sizes(layout: PackageLayout, bios_fat_bytes: int) -> tuple[int, int]:
+    """校验清单 #5: BIOS bin >= 8MiB (实测 32MiB) 且 < FAT 容量 x 0.9;
+    EC bin in {64K,128K,256K,512K} (实测 128K).
+
+    契约 (m-6 防什么事故): 过大的 BIOS bin 若不在此拦截, 会推进到 mcopy
+    才以裸 mtools stderr 失败; 提前以可读错误终止。
+    """
     bios_bytes = layout.bios.bin_path.stat().st_size
     ec_bytes = layout.ec.bin_path.stat().st_size
     if bios_bytes < BIOS_BIN_MIN_BYTES:
@@ -74,6 +81,13 @@ def _check_bin_sizes(layout: PackageLayout) -> tuple[int, int]:
             f"BIOS bin 尺寸 {bios_bytes} 字节 ({bios_bytes / 1048576:.1f} MiB) 低于下限 "
             f"{BIOS_BIN_MIN_BYTES // 1048576} MiB (实测 FEVM BIOS 镜像为 32 MiB)",
             "确认 bin 文件没有下载截断或复制不完整",
+        )
+    bios_fat_limit = bios_fat_bytes * 0.9
+    if bios_bytes >= bios_fat_limit:
+        raise ValidationError(
+            f"BIOS bin 尺寸 {bios_bytes / 1048576:.1f} MiB 达到或超过 FAT 引导镜像容量 "
+            f"({bios_fat_bytes // 1048576} MiB) 的 90%, FAT 镜像装不下",
+            "FAT 镜像装不下, 请确认是否拿错文件 (实测 FEVM BIOS 镜像为 32 MiB)",
         )
     if ec_bytes not in EC_BIN_ALLOWED_BYTES:
         allowed = ", ".join(f"{n // 1024}K" for n in sorted(EC_BIN_ALLOWED_BYTES))
@@ -100,26 +114,46 @@ def _check_nflash_ref(layout: PackageLayout) -> None:
 
 
 def _check_fec_ref(layout: PackageLayout) -> None:
-    """校验清单 #3: FEC64.NSH 引用的 bin 名必须覆盖目录内实际 bin 名.
+    """校验清单 #3: FEC64.NSH 与目录内实际 bin 双向一致.
 
-    契约 (防什么事故): 换固件版本时只拷了新 bin 忘了改 FEC64.NSH 的
-    ifu 行, 脚本会去刷一个不存在的旧文件 —— 用 "实际名 ∈ 引用集合"
-    判定 (脚本注释行允许出现旧名, 只要 ifu 行引用了实际名)。
+    双通道契约 (m-3, 防什么事故):
+    1. 严格通道 —— 每条非注释 ``ifu <name>`` 行引用的文件必须存在于目录
+       (换固件版本时只改了目录没改脚本/或脚本 ifu 行指向不存在的名字,
+       在此拦截);
+    2. 宽松通道 —— 实际 bin 名 ∈ 全文 EC bin token 集合 (向后兼容: 实测
+       厂商脚本注释头会引用旧版本名, 只要 ifu 行引用的文件真实存在且
+       实际名被引用即放行)。
     """
     text = _read_text_guess(layout.ec.fec_nsh)
-    refs = {m.group(0).casefold() for m in EC_BIN_REF_RE.finditer(text)}
-    actual = layout.ec.bin_path.name.casefold()
-    if actual not in refs:
+    present = {p.name.casefold() for p in layout.ec.dir.iterdir() if p.is_file()}
+    ifu_refs = IFU_LINE_RE.findall(text)
+    missing = [ref for ref in ifu_refs if ref.casefold() not in present]
+    if missing:
         raise ValidationError(
-            f"FEC64.NSH 引用的 EC bin 与目录内实际 bin 不一致: 脚本引用 {sorted(refs)}, "
+            f"FEC64.NSH 的 ifu 行引用了目录中不存在的文件: {missing}",
+            "同步修改 FEC64.NSH 的 ifu 行, 使其只引用目录内真实存在的 bin",
+        )
+    tokens = {m.group(0).casefold() for m in EC_BIN_REF_RE.finditer(text)}
+    actual = layout.ec.bin_path.name.casefold()
+    if actual not in tokens:
+        raise ValidationError(
+            f"FEC64.NSH 引用的 EC bin 与目录内实际 bin 不一致: 脚本引用 {sorted(tokens)}, "
             f"实际为 {layout.ec.bin_path.name}",
             "换版本时须同步修改 FEC64.NSH 中的 ifu 行, 使其引用新 bin 文件名",
         )
 
 
 def _parse_versions(layout: PackageLayout) -> tuple[BiosBinName, EcBinName]:
-    """文件名版本解析 (校验清单 #6 的输入)."""
-    bios_bin = parse_bios_bin_name(layout.bios.bin_path.name)
+    """文件名版本解析 (校验清单 #6 的输入); 多个 BIOS 版本候选时硬失败
+    (宁可不构建也不错标 ISO 文件名)."""
+    try:
+        bios_bin = parse_bios_bin_name(layout.bios.bin_path.name)
+    except ValueError as exc:
+        raise ValidationError(
+            f"{exc} (文件: {layout.bios.bin_path.name})",
+            "文件名含多个互不相同的 _V<x.y>_ 字段, 无法唯一确定 BIOS 版本; "
+            "清理或重命名后重跑",
+        ) from exc
     if bios_bin is None:
         raise ValidationError(
             f"无法从 BIOS bin 文件名解析版本: {layout.bios.bin_path.name}",
@@ -173,13 +207,17 @@ def _checksum_info(
     return entry
 
 
-def validate(layout: PackageLayout) -> FirmwareSummary:
-    """内容层校验入口: 全部通过则返回摘要快照, 否则抛 ValidationError."""
+def validate(layout: PackageLayout, bios_fat_bytes: int) -> FirmwareSummary:
+    """内容层校验入口: 全部通过则返回摘要快照, 否则抛 ValidationError.
+
+    bios_fat_bytes 为 BIOS 盘 FAT 引导镜像容量 (字节), 用于 bin 尺寸上限
+    校验; 由调用方从 BUILD_SPECS 注入, 保持本模块纯函数。
+    """
     warnings: list[str] = []
 
     bios_bin, ec_bin = _parse_versions(layout)
     _check_efi_files(layout)
-    bios_bytes, ec_bytes = _check_bin_sizes(layout)
+    bios_bytes, ec_bytes = _check_bin_sizes(layout, bios_fat_bytes)
     _check_nflash_ref(layout)
     _check_fec_ref(layout)
     model = _resolve_model(layout, warnings)

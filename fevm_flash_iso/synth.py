@@ -52,13 +52,21 @@ class SynthOptions:
         return f"EC_{self.ec_project}_V{self.ec_underscore_version}{suffix}.bin"
 
 
-def fake_efi_bytes(machine: int = 0x8664, size: int = 8192) -> bytes:
-    """构造带合法 MZ/PE/Machine 头的假 EFI 文件 (仅头部合法, 无节表)."""
+def fake_efi_bytes(machine: int = 0x8664, size: int = 8192, *, pseudo: bool = False) -> bytes:
+    """构造带合法 MZ/PE/Machine/Magic/SizeOfHeaders 头的假 EFI 文件.
+
+    pseudo=True 时只写 MZ/PE/Machine 三个字段, 其余随机 —— 模拟 "伪体"
+    文件 (头部签名对了但 OptionalHeader 是垃圾), 用于测试 PE32+ 健全性
+    校验的拒绝路径。
+    """
     buf = bytearray(os.urandom(size))
     buf[0:2] = b"MZ"
     struct.pack_into("<I", buf, 0x3C, 0x40)
     buf[0x40:0x44] = b"PE\x00\x00"
     struct.pack_into("<H", buf, 0x44, machine)
+    if not pseudo:
+        struct.pack_into("<H", buf, 0x40 + 24, 0x20B)  # OptionalHeader Magic = PE32+
+        struct.pack_into("<I", buf, 0x40 + 84, 0x200)  # SizeOfHeaders <= 文件长
     return bytes(buf)
 
 
@@ -107,6 +115,7 @@ def synth_package(dest: Path, opts: SynthOptions | None = None) -> Path:
     (ec_dir / "IFU_XE.exe").write_bytes(b"MZ" + os.urandom(4096))  # 噪音文件
     _write(ec_dir / "FEC64.NSH",
            "# synthetic ITE IT5570E eFlash update script\r\n"
+           f"# FILENAME: EC_{o.ec_project}_V{o.ec_underscore_version}.bin\r\n"
            "mm 66 DD -w 1 -io\r\n"
            f"ifu {o.ec_bin_name} 0\r\n")
     _write(ec_dir / "uiset.ini",

@@ -67,15 +67,14 @@ def _bios_pieces(d: Path) -> tuple[list[Path], Path | None, Path | None]:
 
 def _inspect_bios_dir(d: Path) -> BiosPayload | tuple[str, ...]:
     """单次检查 BIOS 目录要素: 成功返回 payload; 失败返回缺失要素清单;
-    有歧义 (多个 bin, 无法安全选择) 直接抛 ValidationError."""
+    有歧义 (指纹齐全但多个 bin, 无法安全选择) 直接抛 ValidationError.
+
+    指纹预筛 (n-6): 没有 Tools/AfuEfix64.efi + Tools/nFlash.nsh 的目录
+    不参与 BIOS bin 歧义判定 —— 避免把 EC 目录里的多个 bin 误报成
+    BIOS 问题。
+    """
     bins, afu, nsh = _bios_pieces(d)
-    if len(bins) > 1:
-        raise ValidationError(
-            f"目录 {d.name} 含 {len(bins)} 个 .bin 文件: "
-            f"{[p.name for p in bins]}, 无法确定 BIOS 镜像",
-            "BIOS 目录顶层只应有一个 .bin; 清理多余文件或用 --bios-dir 显式指定",
-        )
-    if not bins or afu is None or nsh is None:
+    if afu is None or nsh is None:
         missing: list[str] = []
         if not bins:
             missing.append("顶层 *.bin (BIOS 镜像)")
@@ -84,6 +83,14 @@ def _inspect_bios_dir(d: Path) -> BiosPayload | tuple[str, ...]:
         if nsh is None:
             missing.append("Tools/nFlash.nsh")
         return tuple(missing)
+    if len(bins) > 1:
+        raise ValidationError(
+            f"目录 {d} 含 {len(bins)} 个 .bin 文件: "
+            f"{[p.name for p in bins]}, 无法确定 BIOS 镜像",
+            "清理或移走多余的 bin 后重跑",
+        )
+    if not bins:
+        return ("顶层 *.bin (BIOS 镜像)",)
     return BiosPayload(dir=d, bin_path=bins[0], afu_efi=afu, nflash_nsh=nsh)
 
 
@@ -96,15 +103,12 @@ def _ec_pieces(d: Path) -> tuple[list[Path], Path | None, Path | None]:
 
 
 def _inspect_ec_dir(d: Path) -> EcPayload | tuple[str, ...]:
-    """单次检查 EC 目录要素: 成功返回 payload; 失败返回缺失要素清单; 多 bin 抛错."""
+    """单次检查 EC 目录要素: 成功返回 payload; 失败返回缺失要素清单; 多 bin 抛错.
+
+    指纹预筛 (n-6): 缺 ifu.efi / FEC64.NSH 的目录不参与 EC bin 歧义判定.
+    """
     bins, ifu, fec = _ec_pieces(d)
-    if len(bins) > 1:
-        raise ValidationError(
-            f"目录 {d.name} 含 {len(bins)} 个 EC bin 文件: "
-            f"{[p.name for p in bins]}, 无法确定 EC 镜像",
-            "EC 目录内只应有一个 EC bin; 清理多余文件或用 --ec-dir 显式指定",
-        )
-    if not bins or ifu is None or fec is None:
+    if ifu is None or fec is None:
         missing: list[str] = []
         if not bins:
             missing.append("匹配 EC_<项目>_V<数字(_数字)+><F?>.bin 规约的 bin")
@@ -113,6 +117,14 @@ def _inspect_ec_dir(d: Path) -> EcPayload | tuple[str, ...]:
         if fec is None:
             missing.append("FEC64.NSH")
         return tuple(missing)
+    if len(bins) > 1:
+        raise ValidationError(
+            f"目录 {d} 含 {len(bins)} 个 EC bin 文件: "
+            f"{[p.name for p in bins]}, 无法确定 EC 镜像",
+            "清理或移走多余的 bin 后重跑",
+        )
+    if not bins:
+        return ("匹配 EC_<项目>_V<数字(_数字)+><F?>.bin 规约的 bin",)
     return EcPayload(
         dir=d,
         bin_path=bins[0],

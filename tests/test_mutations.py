@@ -79,7 +79,7 @@ def _corrupt_checksum_only(pkg: Path) -> None:
 MUTATIONS: tuple[Mutation, ...] = (
     Mutation("afu_efi_deleted", _rm_bios_tools_afu, ("BIOS", "--bios-dir")),
     Mutation("bios_dir_duplicated", _duplicate_bios_dir, ("候选 BIOS", "--bios-dir")),
-    Mutation("ec_bin_renamed_script_stale", _rename_ec_bin_only, ("FEC64.NSH", "不一致")),
+    Mutation("ec_bin_renamed_script_stale", _rename_ec_bin_only, ("FEC64.NSH", "不存在")),
     Mutation("ifu_mz_corrupt", _corrupt_ifu_mz, ("ifu.efi", "PE/COFF")),
     Mutation("bios_bin_truncated", _truncate_bios_bin, ("BIOS bin", "8 MiB")),
     Mutation("nflash_ref_broken", _break_nflash_ref, ("nFlash.nsh", "Tools")),

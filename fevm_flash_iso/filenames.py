@@ -10,8 +10,10 @@ from dataclasses import dataclass
 
 # BIOS bin: ..._V1.06_..._EC_V0.1.29_20260720.bin
 # 负向后视排除 EC_V 前缀, 防止把内嵌 EC 版本误读成 BIOS 版本
+# (过度排除, 如机型名恰以 EC_ 结尾时 -> 无匹配 -> 上层硬失败, 失败安全)
 BIOS_VERSION_RE = re.compile(r"(?<!EC_)V(\d+\.\d+)")
-EMBEDDED_EC_RE = re.compile(r"EC_V([\d.]+)")
+# 禁止吞尾点: EC_V0.1.29_20260720.bin 中不得把 "0.1.29." 的尾点吃进版本
+EMBEDDED_EC_RE = re.compile(r"EC_V(\d+(?:\.\d+)+)")
 # EC bin: EC_FEVM_V9_4_0_1_29F.bin (下划线串转点分 => 9.4.0.1.29)
 EC_BIN_RE = re.compile(r"^EC_(\w+?)_V(\d+(?:_\d+)+)(F?)\.bin$", re.IGNORECASE)
 # ChecksumF.txt: [<bin名>] checksum : <8位hex> (ITE 私有算法, 仅供人工比对)
@@ -62,13 +64,17 @@ class ChecksumEntry:
 
 
 def parse_bios_bin_name(name: str) -> BiosBinName | None:
-    """解析 BIOS bin 文件名; 缺少 BIOS 版本或内嵌 EC 版本字段时返回 None."""
-    bios = BIOS_VERSION_RE.search(name)
+    """解析 BIOS bin 文件名; 缺少版本字段返回 None; 含多个互不相同的
+    BIOS 版本候选时抛 ValueError (宁可不解析也不错标 —— 防止 ISO 文件名
+    标错版本)."""
+    versions = {m.group(1) for m in BIOS_VERSION_RE.finditer(name)}
+    if len(versions) > 1:
+        raise ValueError(f"BIOS bin 文件名含多个版本候选: {sorted(versions)}")
     embedded = EMBEDDED_EC_RE.search(name)
-    if bios is None or embedded is None:
+    if not versions or embedded is None:
         return None
     return BiosBinName(
-        raw=name, bios_version=bios.group(1), embedded_ec_version=embedded.group(1)
+        raw=name, bios_version=next(iter(versions)), embedded_ec_version=embedded.group(1)
     )
 
 

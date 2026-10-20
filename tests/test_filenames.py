@@ -34,6 +34,28 @@ def test_parse_bios_bin_name_missing_fields(name: str) -> None:
     assert parse_bios_bin_name(name) is None
 
 
+def test_parse_bios_bin_name_embedded_no_trailing_dot() -> None:
+    """m-4 回归: EC 版本不得吞尾点 (曾导致假 "版本不一致" 警告)."""
+    r = parse_bios_bin_name("A_V1.06_EC_V0.1.29.bin")
+    assert r is not None
+    assert r.bios_version == "1.06"
+    assert r.embedded_ec_version == "0.1.29"
+    assert not r.embedded_ec_version.endswith(".")
+
+
+def test_parse_bios_bin_name_multiple_version_candidates_raises() -> None:
+    """n-4: 多个互不相同的 BIOS 版本字段 => 硬失败, 不静默取第一个."""
+    with pytest.raises(ValueError, match="多个版本候选"):
+        parse_bios_bin_name("A_V1.06_B_V2.00_EC_V0.1.29.bin")
+
+
+def test_parse_bios_bin_name_repeated_same_version_ok() -> None:
+    """重复出现同一版本值不算歧义."""
+    r = parse_bios_bin_name("A_V1.06_B_V1.06_EC_V0.1.29.bin")
+    assert r is not None
+    assert r.bios_version == "1.06"
+
+
 def test_parse_ec_bin_name_with_f_suffix() -> None:
     r = parse_ec_bin_name(EC_NAME)
     assert r is not None

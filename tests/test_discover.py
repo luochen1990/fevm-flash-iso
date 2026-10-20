@@ -95,8 +95,23 @@ def test_discover_explicit_dir_not_exists(pkg: Path, tmp_path: Path) -> None:
 def test_discover_ambiguous_bins_in_dir(pkg: Path) -> None:
     extra_bin = _bios_dir(pkg) / "TESTX1_V9.99_extra.bin"
     extra_bin.write_bytes(b"MZ" + b"\x00" * 8 * 1024 * 1024)
-    with pytest.raises(ValidationError, match="无法确定 BIOS 镜像"):
+    with pytest.raises(ValidationError) as exc:
         discover(pkg, None, None)
+    assert "无法确定 BIOS 镜像" in exc.value.what
+    assert str(_bios_dir(pkg)) in exc.value.what  # n-6: 错误带完整目录路径
+    assert "--bios-dir" not in exc.value.hint  # m-5: 歧义 hint 不再指向死胡同
+    assert "清理或移走" in exc.value.hint
+
+
+def test_discover_ec_dir_two_bins_reports_ec_not_bios(pkg: Path) -> None:
+    """n-6: EC 目录里的两个 EC bin 应报 EC 歧义, 而不是被 BIOS 扫描误报."""
+    ec = _ec_dir(pkg)
+    (ec / "EC_TESTX1_V9_4_0_1_28F.bin").write_bytes(b"\x00" * 128 * 1024)
+    with pytest.raises(ValidationError) as exc:
+        discover(pkg, None, None)
+    assert "无法确定 EC 镜像" in exc.value.what
+    assert str(ec) in exc.value.what
+    assert "清理或移走" in exc.value.hint
 
 
 def test_discover_ec_missing_ifu_skips_candidate(pkg: Path) -> None:
