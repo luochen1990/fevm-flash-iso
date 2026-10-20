@@ -90,6 +90,22 @@ def test_stale_products_warning(
     assert "已作废" not in out
 
 
+def test_orphan_tmp_warning(
+    pkg: Path, out_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """nit-2: 中断残留的 *.iso.tmp 单独提醒, 文案与旧版本产物区分."""
+    out_dir.mkdir(parents=True)
+    (out_dir / "TESTX1_FLASH_BIOS_V9.99.iso.tmp").write_bytes(b"interrupted")
+    assert cli.main([str(pkg), "-o", str(out_dir)]) == 0
+    out = capsys.readouterr().out
+    assert "中断的残留文件" in out
+    assert "TESTX1_FLASH_BIOS_V9.99.iso.tmp" in out
+    assert "旧版本产物" not in out  # 没有 *.iso 时不出旧产物文案
+    # 只提醒不代删: 孤儿 tmp 保留由用户处理; 本次运行自身不留任何 tmp
+    assert (out_dir / "TESTX1_FLASH_BIOS_V9.99.iso.tmp").is_file()
+    assert sorted(p.name for p in out_dir.glob("*.tmp")) == ["TESTX1_FLASH_BIOS_V9.99.iso.tmp"]
+
+
 def test_unexpected_oserror_maps_to_exit_3(
     pkg: Path, out_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

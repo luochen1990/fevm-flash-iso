@@ -42,7 +42,7 @@ class BuildSpec:
 
     @property
     def probe_path(self) -> str:
-        """startup.nsh 探测循环用的完整路径, 如 ``fs%a:\\0_Afu_Flash\\Tools\\nFlash.nsh``."""
+        """startup.nsh 探测循环用的完整路径, 如 ``fs%z:\\0_Afu_Flash\\Tools\\nFlash.nsh``."""
         return f"{self.payload_dir}\\{self.payload_entry}"
 
 

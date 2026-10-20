@@ -127,6 +127,12 @@ def _check_fec_ref(layout: PackageLayout) -> None:
     text = _read_text_guess(layout.ec.fec_nsh)
     present = {p.name.casefold() for p in layout.ec.dir.iterdir() if p.is_file()}
     ifu_refs = IFU_LINE_RE.findall(text)
+    # minor-1: 完全没有 ifu 执行行 => 造出的是 "静默无操作" 的 EC 盘, 必须硬失败
+    if not ifu_refs:
+        raise ValidationError(
+            f"FEC64.NSH ({layout.ec.fec_nsh}) 中未找到任何 ifu 刷写行",
+            "请确认文件完整 (合法脚本应含 'ifu <bin> 0' 形式的执行行)",
+        )
     missing = [ref for ref in ifu_refs if ref.casefold() not in present]
     if missing:
         raise ValidationError(

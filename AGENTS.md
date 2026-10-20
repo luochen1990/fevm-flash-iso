@@ -68,7 +68,7 @@ CLI(argv)
 | --- | --- | --- |
 | 1 | 恰好一个 BIOS 目录（`*.bin`+`Tools/AfuEfix64.efi`+`Tools/nFlash.nsh`）与恰好一个 EC 目录（`EC_*.bin`+`ifu.efi`+`FEC64.NSH`），按内容识别，支持显式覆盖；歧义判定带完整目录路径，且先做内容指纹预筛（无指纹的目录不参与另一类的 bin 歧义判定） | `discover.py` |
 | 2 | 所有被消费的 `.efi` 是 PE/COFF 且 Machine=0x8664，OptionalHeader Magic=0x20B（PE32+），SizeOfHeaders ≤ 文件长度（截断/伪体拒绝） | `pecoff.py`（validate 调用，含 Shell.efi） |
-| 3 | `FEC64.NSH` 双通道交叉校验：严格通道——每条非注释 `ifu <name>` 行引用的文件必须存在于目录；宽松通道——实际 bin 名 ∈ 全文 EC bin token 集合（兼容厂商注释头引用旧名形态） | `validate._check_fec_ref` |
+| 3 | `FEC64.NSH` 双通道交叉校验：**至少一条非注释 `ifu <name>` 行**（完全没有 → 硬失败，防"静默无操作" EC 盘）；严格通道——每条 `ifu <name>` 行引用的文件必须存在于目录；宽松通道——实际 bin 名 ∈ 全文 EC bin token 集合（兼容厂商注释头引用旧名形态） | `validate._check_fec_ref` |
 | 4 | `nFlash.nsh` 内容引用 `.\Tools\AfuEfix64.efi` | `validate._check_nflash_ref` |
 | 5 | BIOS bin ≥ 8 MiB（实测 32 MiB）且 < FAT 容量 × 0.9（实测 64 MiB）；EC bin ∈ {64K,128K,256K,512K}（实测 128K） | `validate._check_bin_sizes`（容量由 cli 从 `BUILD_SPECS` 注入） |
 | 6 | 机型/BIOS 版本/内嵌 EC 版本/EC 包版本解析展示 + 软一致性（release 尾段比较，不一致仅 warning）；BIOS 版本字段多候选时**硬失败**（不错标 ISO 名） | `filenames.py` + `validate.py` |
@@ -143,8 +143,9 @@ $ # 自检通过后: os.replace <OUT>.iso.tmp <OUT>.iso (原子发布, M-1)
   `-s 1`（≈16K 簇），64 MiB 用 `-s 4`（≈32K 簇），跨版本可复现。
 - 外部命令统一 300 秒超时（`cmd.COMMAND_TIMEOUT_SECONDS`），超时转
   BuildError（防工具卡死挂起 CLI）。
-- 构建前扫描输出目录既有 `*.iso` 并打印"旧版本产物"提醒（防 Ventoy
-  中新旧拿混）；同名重建不告警（将被原子替换）。
+- 构建前扫描输出目录既有 `*.iso`（旧版本产物）与孤儿 `*.iso.tmp`（中断/
+  断电残留）并分别打印提醒（防 Ventoy 中新旧拿混 / 防误用残缺文件）；
+  同名重建不告警（将被原子替换）；提醒不代删，由用户手动清理。
 
 ISO 内布局：
 

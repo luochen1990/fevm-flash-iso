@@ -113,6 +113,21 @@ def test_validate_fec_ifu_line_missing_file(pkg: Path) -> None:
     assert "EC_GHOST_V1_0_0F.bin" in exc.value.what
 
 
+def test_validate_fec_without_ifu_lines_rejected(pkg: Path) -> None:
+    """minor-1: 完全没有 ifu 执行行 (只剩 mm/注释) => 硬失败, 防静默无操作 EC 盘."""
+    ec = _ec_dir(pkg)
+    (ec / "FEC64.NSH").write_text(
+        "# synthetic ITE IT5570E eFlash update script\r\n"
+        "mm 66 DD -w 1 -io\r\n"
+        "mm 66 DD -w 1 -io\r\n",
+        encoding="ascii", newline="",
+    )
+    with pytest.raises(ValidationError) as exc:
+        _validate(pkg)
+    assert "未找到任何 ifu 刷写行" in exc.value.what
+    assert "完整" in exc.value.hint
+
+
 def test_validate_fec_stale_comment_old_name_still_passes(pkg: Path) -> None:
     """m-3 宽松通道回归: 厂商注释头引用旧版本名 (实测形态) 应放行."""
     ec = _ec_dir(pkg)

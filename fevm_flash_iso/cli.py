@@ -206,8 +206,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         product_names = [iso_product_name(BUILD_SPECS[t], summary) for t in FlashTarget]
         if args.out_dir.is_dir():
             stale = sorted(p for p in args.out_dir.glob("*.iso") if p.name not in product_names)
-            if stale:
-                report.print_stale_products(stale)
+            orphan_tmps = sorted(args.out_dir.glob("*.iso.tmp"))  # 中断/断电残留
+            if stale or orphan_tmps:
+                report.print_stale_products(stale, orphan_tmps)
         args.out_dir.mkdir(parents=True, exist_ok=True)
         products = [
             build_product(BUILD_SPECS[target], summary, shell_efi, args)
