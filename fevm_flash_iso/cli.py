@@ -192,6 +192,14 @@ def _remove_partial_products(out_dir: Path, product_names: Sequence[str]) -> tup
     return tuple(removed)
 
 
+def _abort_build(args: CliArgs, product_names: Sequence[str], message: str) -> int:
+    """构建失败统一收尾 (退出码 3): 报错 + 兜底清理本次已写出的产物."""
+    report.print_error(message)
+    if args.out_dir.is_dir():
+        report.print_discarded_products(_remove_partial_products(args.out_dir, product_names))
+    return 3
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI 入口: 返回进程退出码 (0/2/3, 见模块 docstring)."""
     args = parse_args(sys.argv[1:] if argv is None else argv)
@@ -223,16 +231,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         report.print_error(f"{exc.what}\n  修复指引: {exc.hint}")
         return 2
     except BuildError as exc:
-        report.print_error(str(exc))
-        if args.out_dir.is_dir():
-            report.print_discarded_products(_remove_partial_products(args.out_dir, product_names))
-        return 3
+        return _abort_build(args, product_names, str(exc))
     except (OSError, UnicodeDecodeError) as exc:
         # 未预期的 I/O / 解码错误也归入 3, 保持 0/2/3 契约, 不裸抛 traceback
-        report.print_error(f"未预期的 I/O 错误: {exc!r}")
-        if args.out_dir.is_dir():
-            report.print_discarded_products(_remove_partial_products(args.out_dir, product_names))
-        return 3
+        return _abort_build(args, product_names, f"未预期的 I/O 错误: {exc!r}")
     return 0
 
 

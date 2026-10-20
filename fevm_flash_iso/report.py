@@ -96,7 +96,7 @@ def print_stage_note(stage_root: Path) -> None:
     print(f"stage 中间目录已保留: {stage_root}")
 
 
-def print_stale_products(stale: Sequence[Path], orphan_tmps: Sequence[Path] = ()) -> None:
+def print_stale_products(stale: Sequence[Path], orphan_tmps: Sequence[Path]) -> None:
     """构建前提醒输出目录里已有的旧产物与中断残留 (防拿混/防误用)."""
     if stale:
         print("警告: 输出目录中检测到旧版本产物, 为防在 Ventoy 中拿混请手动清理:")

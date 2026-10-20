@@ -6,8 +6,10 @@
 
 """包结构识别: 内容指纹式发现 BIOS/EC 目录。"""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeVar
 
 from .errors import ValidationError
 from .filenames import parse_ec_bin_name
@@ -135,24 +137,21 @@ def _inspect_ec_dir(d: Path) -> EcPayload | tuple[str, ...]:
     )
 
 
-def _match_bios_dir(d: Path) -> BiosPayload:
-    """显式指定的 BIOS 目录: 要素不全时按缺失清单报错."""
-    result = _inspect_bios_dir(d)
-    if isinstance(result, tuple):
-        raise ValidationError(
-            f"目录 {d} 缺少 BIOS 目录要素: {', '.join(result)}",
-            f"确认指向正确的 BIOS 目录 ({BIOS_DIR_HINT})",
-        )
-    return result
+_PayloadT = TypeVar("_PayloadT")
 
 
-def _match_ec_dir(d: Path) -> EcPayload:
-    """显式指定的 EC 目录: 要素不全时按缺失清单报错."""
-    result = _inspect_ec_dir(d)
+def _match_dir(
+    d: Path,
+    inspect_dir: Callable[[Path], _PayloadT | tuple[str, ...]],
+    kind: str,
+    hint: str,
+) -> _PayloadT:
+    """目录要素校验: inspect 返回缺失清单时按清单报错, 否则返回 payload."""
+    result = inspect_dir(d)
     if isinstance(result, tuple):
         raise ValidationError(
-            f"目录 {d} 缺少 EC 目录要素: {', '.join(result)}",
-            f"确认指向正确的 EC 目录 ({EC_DIR_HINT})",
+            f"目录 {d} 缺少 {kind} 目录要素: {', '.join(result)}",
+            f"确认指向正确的 {kind} 目录 ({hint})",
         )
     return result
 
@@ -175,25 +174,14 @@ def _select_one(root: Path, kind: str, candidates: list[Path]) -> Path:
     return candidates[0]
 
 
-def _scan_bios(root: Path) -> list[Path]:
-    """按内容指纹找出候选 BIOS 目录 (要素不全的目录被跳过, 歧义目录抛错)."""
+def _scan_dirs(root: Path, inspect_dir: Callable[[Path], object]) -> list[Path]:
+    """按内容指纹找出候选目录 (要素不全的目录被跳过, 歧义目录抛错)."""
     candidates: list[Path] = []
     for d in sorted(root.iterdir()):
-        if d.is_dir() and not d.name.startswith("."):
-            result = _inspect_bios_dir(d)
-            if not isinstance(result, tuple):
-                candidates.append(d)
-    return candidates
-
-
-def _scan_ec(root: Path) -> list[Path]:
-    """按内容指纹找出候选 EC 目录 (要素不全的目录被跳过, 歧义目录抛错)."""
-    candidates: list[Path] = []
-    for d in sorted(root.iterdir()):
-        if d.is_dir() and not d.name.startswith("."):
-            result = _inspect_ec_dir(d)
-            if not isinstance(result, tuple):
-                candidates.append(d)
+        if not d.is_dir() or d.name.startswith("."):
+            continue
+        if not isinstance(inspect_dir(d), tuple):
+            candidates.append(d)
     return candidates
 
 
@@ -207,10 +195,20 @@ def discover(root: Path, bios_dir: Path | None, ec_dir: Path | None) -> PackageL
             f"包根目录不存在或不是目录: {root}",
             "路径应指向 FEVM 固件包根目录 (其下有 BIOS 目录与 EC 目录)",
         )
-    bios_path = bios_dir if bios_dir is not None else _select_one(root, "BIOS", _scan_bios(root))
-    ec_path = ec_dir if ec_dir is not None else _select_one(root, "EC", _scan_ec(root))
+    bios_path = (
+        bios_dir
+        if bios_dir is not None
+        else _select_one(root, "BIOS", _scan_dirs(root, _inspect_bios_dir))
+    )
+    ec_path = (
+        ec_dir if ec_dir is not None else _select_one(root, "EC", _scan_dirs(root, _inspect_ec_dir))
+    )
     if not bios_path.is_dir():
         raise ValidationError(f"--bios-dir 指向的目录不存在: {bios_path}", "检查路径或改用自动识别")
     if not ec_path.is_dir():
         raise ValidationError(f"--ec-dir 指向的目录不存在: {ec_path}", "检查路径或改用自动识别")
-    return PackageLayout(root=root, bios=_match_bios_dir(bios_path), ec=_match_ec_dir(ec_path))
+    return PackageLayout(
+        root=root,
+        bios=_match_dir(bios_path, _inspect_bios_dir, "BIOS", BIOS_DIR_HINT),
+        ec=_match_dir(ec_path, _inspect_ec_dir, "EC", EC_DIR_HINT),
+    )
