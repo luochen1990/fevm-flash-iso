@@ -10,7 +10,7 @@ import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
-from .errors import ValidationError, build_failure_from_proc
+from .errors import BuildError, ValidationError, build_failure_from_proc
 
 # 管线依赖的外部工具 (nix develop 全部提供)
 REQUIRED_TOOLS: tuple[str, ...] = ("truncate", "mkfs.vfat", "mcopy", "mdir", "xorriso")
@@ -18,6 +18,9 @@ REQUIRED_TOOLS: tuple[str, ...] = ("truncate", "mkfs.vfat", "mcopy", "mdir", "xo
 NIX_ENV_HINT = (
     "在 NixOS 上进入开发环境: nix develop (或 nix-shell -p mtools dosfstools xorriso)"
 )
+
+# 单条外部命令的超时 (秒): 防止工具卡死导致 CLI 永久挂起
+COMMAND_TIMEOUT_SECONDS = 300
 
 
 def require_tools() -> None:
@@ -31,9 +34,18 @@ def require_tools() -> None:
 
 
 def run_ok(cmd: Sequence[str | Path], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-    """运行命令 (str/Path 混合的参数表会被统一转成 str); 非零退出码抛 BuildError."""
+    """运行命令 (str/Path 混合的参数表会被统一转成 str); 非零退出码抛
+    BuildError (含命令与输出摘录); 超时抛 BuildError (含命令行)."""
     argv = [str(c) for c in cmd]
-    proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False)
+    try:
+        proc = subprocess.run(
+            argv, cwd=cwd, capture_output=True, text=True, check=False,
+            timeout=COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise BuildError(
+            f"命令超时 (>{COMMAND_TIMEOUT_SECONDS}s): {' '.join(argv)}"
+        ) from exc
     if proc.returncode != 0:
         raise build_failure_from_proc(f"命令执行失败: {argv[0]}", argv, proc)
     return proc

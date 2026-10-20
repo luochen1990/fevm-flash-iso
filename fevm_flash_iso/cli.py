@@ -1,14 +1,17 @@
 # 职责边界: CLI 入口与管线编排。集中式预处理: 参数解析、路径规范化、
 # 默认值收敛全部发生在 parse_args (核心逻辑拿到的都是合规的绝对路径);
 # 之后按 校验 -> 解析 -> 构建 -> 自检 -> 报告 的顺序编排, 任何一步失败
-# 即终止 (fail fast)。退出码: 0 成功, 2 输入/环境校验失败, 3 构建或自检
-# 失败。
+# 即终止 (fail fast)。产物发布是原子的 (M-1): 先写 <名>.iso.tmp, 自检
+# (含内嵌副本哈希比对) 通过后 os.replace 到最终名; 任一构建失败时清理
+# 本次运行已写出的全部 .iso/.tmp 残留。退出码: 0 成功, 2 输入/环境校验
+# 失败, 3 构建或自检失败 (含未预期的 I/O 错误)。
 
 """CLI: fevm-flash-iso <包根目录> [-o 输出目录] [--shell-efi PATH]
      [--bios-dir PATH] [--ec-dir PATH] [--keep-stage]
 """
 
 import argparse
+import os
 import shutil
 import sys
 import tempfile
@@ -62,6 +65,11 @@ class Product:
     target: FlashTarget
     iso: Path
     listing: tuple[str, ...]
+
+
+def tmp_name_for(final_name: str) -> str:
+    """原子发布的临时文件名: <产物名>.iso -> <产物名>.iso.tmp."""
+    return f"{final_name}.tmp"
 
 
 def parse_args(argv: Sequence[str]) -> CliArgs:
@@ -142,7 +150,8 @@ def build_product(
     shell_efi: Path,
     args: CliArgs,
 ) -> Product:
-    """构建单个刷写 ISO: stage -> FAT 镜像 -> isoroot -> xorriso -> 自检."""
+    """构建单个刷写 ISO: stage -> FAT 镜像 -> isoroot -> xorriso(临时名)
+    -> 自检(内嵌副本) -> 原子发布 (os.replace 到最终名)."""
     banner, firmware_line, steps = _banner_and_steps(spec, summary)
     readme = render_readme(spec, summary.model, firmware_line, steps)
     actions = stage_actions(
@@ -163,22 +172,42 @@ def build_product(
         (isoroot / README_NAME).write_text(readme, encoding="ascii", newline="")
 
         out_iso = args.out_dir / iso_product_name(spec, summary)
-        build_iso(isoroot, out_iso, spec.iso_volid)
-        verify_iso(out_iso, fat_image, expected_image_paths(actions))
+        tmp_iso = args.out_dir / tmp_name_for(out_iso.name)
+        build_iso(isoroot, tmp_iso, spec.iso_volid)
+        verify_iso(tmp_iso, fat_image, expected_image_paths(actions), workdir)
+        os.replace(tmp_iso, out_iso)
         listing = list_fat_tree(fat_image)
     return Product(target=spec.target, iso=out_iso, listing=listing)
+
+
+def _remove_partial_products(out_dir: Path, product_names: Sequence[str]) -> tuple[Path, ...]:
+    """原子发布兜底: 删除本次运行可能已写出的全部 .iso / .iso.tmp 残留,
+    返回实际删除的路径 (供报告). 预先存在的旧产物不在清理范围."""
+    removed: list[Path] = []
+    for name in product_names:
+        for candidate in (out_dir / name, out_dir / tmp_name_for(name)):
+            if candidate.is_file():
+                candidate.unlink()
+                removed.append(candidate)
+    return tuple(removed)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI 入口: 返回进程退出码 (0/2/3, 见模块 docstring)."""
     args = parse_args(sys.argv[1:] if argv is None else argv)
+    product_names: list[str] = []  # 校验通过后填充; 失败兜底清理只针对它
     try:
         require_tools()
         layout = discover(args.package_root, args.bios_dir, args.ec_dir)
-        summary = validate(layout)
+        summary = validate(layout, _bios_fat_bytes())
         shell_efi = resolve_shell_efi(args.shell_efi)
         report.print_summary(summary)
 
+        product_names = [iso_product_name(BUILD_SPECS[t], summary) for t in FlashTarget]
+        if args.out_dir.is_dir():
+            stale = sorted(p for p in args.out_dir.glob("*.iso") if p.name not in product_names)
+            if stale:
+                report.print_stale_products(stale)
         args.out_dir.mkdir(parents=True, exist_ok=True)
         products = [
             build_product(BUILD_SPECS[target], summary, shell_efi, args)
@@ -194,8 +223,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     except BuildError as exc:
         report.print_error(str(exc))
+        if args.out_dir.is_dir():
+            report.print_discarded_products(_remove_partial_products(args.out_dir, product_names))
+        return 3
+    except (OSError, UnicodeDecodeError) as exc:
+        # 未预期的 I/O / 解码错误也归入 3, 保持 0/2/3 契约, 不裸抛 traceback
+        report.print_error(f"未预期的 I/O 错误: {exc!r}")
+        if args.out_dir.is_dir():
+            report.print_discarded_products(_remove_partial_products(args.out_dir, product_names))
         return 3
     return 0
+
+
+def _bios_fat_bytes() -> int:
+    """BIOS 盘 FAT 镜像容量 (字节), 注入 validate 做 bin 尺寸上限校验."""
+    return BUILD_SPECS[FlashTarget.BIOS].fat_size_mib * 1024 * 1024
 
 
 if __name__ == "__main__":  # pragma: no cover

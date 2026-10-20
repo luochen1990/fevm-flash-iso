@@ -94,3 +94,18 @@ def print_error(message: str) -> None:
 def print_stage_note(stage_root: Path) -> None:
     """--keep-stage 时提示中间目录位置."""
     print(f"stage 中间目录已保留: {stage_root}")
+
+
+def print_stale_products(stale: Sequence[Path]) -> None:
+    """构建前提醒输出目录里已有的旧产物 (防在 Ventoy 中新旧拿混)."""
+    print("警告: 输出目录中检测到旧版本产物, 为防在 Ventoy 中拿混请手动清理:")
+    for path in stale:
+        print(f"  - {path}")
+
+
+def print_discarded_products(discarded: Sequence[Path]) -> None:
+    """构建失败后报告本次运行已清理作废的产物 (原子发布的兜底)."""
+    if discarded:
+        print("以下本次运行写出的产物已作废并清理:")
+        for path in discarded:
+            print(f"  - {path}")
