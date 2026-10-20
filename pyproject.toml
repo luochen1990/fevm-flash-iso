@@ -1,0 +1,56 @@
+[project]
+name = "fevm-flash-iso"
+version = "0.1.0"
+description = "FEVM firmware package validator and no-Windows UEFI Shell flash ISO builder"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+[project.scripts]
+fevm-flash-iso = "fevm_flash_iso.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["fevm_flash_iso"]
+
+[tool.setuptools.package-data]
+# 内置 edk2 UEFI Shell (BSD-2-Patent, 可再分发, 见 assets/SHELL_SOURCE.md)
+fevm_flash_iso = ["assets/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# 平铺布局: 把仓库根加入 sys.path, 使 `import fevm_flash_iso` 在测试内可用
+pythonpath = ["."]
+
+[tool.coverage.run]
+source = ["fevm_flash_iso"]
+omit = ["fevm_flash_iso/__main__.py"]  # 2 行入口胶水, 由 golden 测试经 cli.main 间接覆盖
+
+[tool.coverage.report]
+exclude_also = [
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # isort
+  "UP",  # pyupgrade
+  "B",   # flake8-bugbear
+  "SIM", # flake8-simplify
+  "RUF", # ruff-specific
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true

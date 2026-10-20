@@ -1,0 +1,20 @@
+# 构建产物与 stage 残留
+dist/
+stage/
+stage-*/
+*.iso
+*.img
+
+# Python
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Nix
+.direnv/
+result
