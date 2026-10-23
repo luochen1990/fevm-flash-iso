@@ -1,0 +1,4 @@
+# 固件分支 (firmware/**) 的载荷与校验文件保持字节精确, 禁止任何 eol/文本转换
+# (防止 Windows autocrlf 使 sha256.txt 或厂商脚本行尾漂移, 破坏完整性校验)
+pkg/** -text
+sha256.txt -text
