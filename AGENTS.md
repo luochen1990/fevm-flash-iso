@@ -176,6 +176,50 @@ CLI 每次构建前还会再自检一次。
 - 纯函数层（filenames/pecoff/texts）不依赖外部工具，随时可跑。
 - 质量门禁：`just check` = ruff + `mypy --strict` + pytest 覆盖率 ≥ 85%。
 
+## 固件分支与自动发布（`firmware/**` + release.yml）
+
+master **永不包含真实固件**；固件存放在独立分支，CI 自动构建并发布：
+
+- 分支命名：`firmware/<机型小写>`（如 `firmware/faex1`），**基于 master 创建**，在其上新增三样东西，其余文件不动：
+  - `pkg/`：解压后的官方固件包原样目录（pkg/ 下直接是 BIOS/EC 两个目录）；
+  - `PROVENANCE.md`：人写的来源记录（原始下载地址、下载日期、BIOS/EC 版本号、备注），发布时全文进 release notes；
+  - `sha256.txt`：`(cd pkg && find . -type f | sort | xargs sha256sum) > sha256.txt` 生成，CI 用 `sha256sum --check` fail fast 校验。
+- **为什么必须基于 master**：`on: push` 只执行*被 push 分支上*的 workflow 文件，孤立分支上没有 `.github/workflows/release.yml`，推送不会触发发布。
+- **同步 master 用 merge 不用 rebase**：rebase 改写历史 → push 需 force；force-push 禁止（release tag 钉在固件分支 commit 上，历史必须稳定）。merge 无冲突风险（`pkg/`、`PROVENANCE.md`、`sha256.txt` 与 master 路径永不相交）。
+- **固件分支永不并回 master**。
+
+发布行为（release.yml，push 到 `firmware/**` 自动触发）：
+
+sha256 校验 → CLI 构建 + 产物自检 → 从 ISO 文件名推导 tag
+`<机型小写>-bios<BIOS版本>-ec<EC版本>`（如 `faex1-bios1.06-ec9.4.0.1.29`）→
+上传两个 ISO + `SHA256SUMS` 到该 tag 的 release（同版本重推 = clobber 覆盖更新资产与 notes）。
+
+维护流程：
+
+```console
+# 初始化新机型固件分支（每机型一次）:
+$ git checkout -b firmware/faex1 origin/master
+$ mkdir pkg && cp -r <解压后的固件包>/* pkg/
+$ (cd pkg && find . -type f | sort | xargs sha256sum) > sha256.txt
+$ $EDITOR PROVENANCE.md      # 下载地址/日期/版本/备注
+$ git add pkg sha256.txt PROVENANCE.md
+$ git commit -m "firmware: FAEX1 BIOS V1.06 + EC V9.4.0.1.29"
+$ git push -u origin firmware/faex1   # push 即触发自动发布
+
+# 固件版本更新:
+$ git checkout firmware/faex1
+$ git fetch origin && git merge origin/master   # 先同步 master (必须, merge 非 rebase)
+$ rm -rf pkg && mkdir pkg && cp -r <新包>/* pkg/
+$ (cd pkg && find . -type f | sort | xargs sha256sum) > sha256.txt
+$ $EDITOR PROVENANCE.md                      # 更新版本与来源
+$ git add -A && git commit -m "firmware: FAEX1 BIOS V1.07 + EC ..."   # msg 注明版本号
+$ git push
+```
+
+注：GitHub 单文件硬限 100 MiB（BIOS bin 实测 32 MiB，安全）；固件分支对
+public 仓库可见，含厂商专有工具与固件镜像的再分发（FEVM 官方本就免费公开
+分发，风险自担，PROVENANCE 保留原始出处）。
+
 ## 开发循环
 
 ```console
@@ -184,6 +228,9 @@ $ just check           # lint + 类型 + 测试(覆盖率门禁)
 $ just build-demo      # 合成包 -> 两个 ISO 的端到端演示 (临时目录)
 $ just fmt             # ruff format + autofix
 ```
+
+CI（ci.yml）：push/PR 到 master 自动执行 `nix develop -c just check` +
+`just build-demo`，与本地质量门禁同源。
 
 提交纪律：按逻辑分 commit（骨架/实现/测试/文档），msg 一行简洁；
 清理代码的 commit 必须在 msg 里留下可搜索的关键词。

@@ -85,6 +85,13 @@ $ just build-demo
 4. **BIOS 盘**：刷写工具要求确认时按 **y**。
 5. **EC 盘**：刷写完成后**自动关机**；必须**拔电源等 10 秒**再通电。
 
+## 预构建 ISO（Releases）
+
+不想自己构建？每个机型的固件存放在独立的 `firmware/<机型>` 分支，push
+后 CI 自动完成 sha256 校验 → 构建 → 产物自检 → 发布：前往仓库
+**Releases** 页下载两个 ISO 与 `SHA256SUMS`（下载后请核对校验和）。
+release notes 附固件原始来源与刷写安全提示。维护者流程见 `AGENTS.md`。
+
 ## 限制
 
 - 仅实测过 **FEVM FAEX1**（AMD Strix Halo）固件包格式；其他机型的命名
