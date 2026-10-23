@@ -1,0 +1,123 @@
+# =============================================================================
+# 固件发布 workflow — 服务于本仓库的「固件分支模型」
+#
+# 固件分支模型:
+#   - 固件存放在 `firmware/<机型小写>` 分支 (如 firmware/faex1), 该分支基于
+#     master 创建, 在 master 内容之上新增三样东西:
+#       * pkg/           解压后的官方固件包原样目录 (BIOS 目录 + EC 目录都在 pkg/ 下)
+#       * PROVENANCE.md  人写的来源记录: 原始下载地址 / 下载日期 / 固件版本号 / 备注
+#       * sha256.txt     在分支根目录用
+#                        (cd pkg && find . -type f -print0 | sort -z | xargs -0 sha256sum) > sha256.txt
+#                        生成, 行内路径形如 ./FAEX1_BIOS/xxx.bin
+#   - 关键约束: GitHub Actions 的 on: push 只执行 **被 push 分支上** 的 workflow
+#     文件, 因此固件分支必须基于 master (从而携带本文件); 每次更新固件前需
+#     先 git merge origin/master (用 merge 非 rebase: rebase 改写历史需 force push,
+#     而 release tag 钉在分支 commit 上, 禁止 force push).
+#   - 固件分支永不并回 master (master 永不包含真实固件).
+#   - 分支模型与维护流程详见 AGENTS.md「固件分支与自动发布」.
+#
+# 流程: sha256 完整性校验 (fail fast) -> CLI 构建 ISO (内部自检+原子发布,
+# 失败即非零退出) -> 从产物文件名推导 tag -> 创建/更新 GitHub Release 并上传.
+# =============================================================================
+
+name: release
+
+on:
+  push:
+    branches:
+      - "firmware/**"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout firmware branch
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+
+      - name: Verify firmware integrity (sha256 + provenance)
+        run: |
+          test -f PROVENANCE.md || { echo "::error::PROVENANCE.md missing (固件分支必需, 见 AGENTS.md)" >&2; exit 1; }
+          nix develop -c bash -c 'cd pkg && sha256sum --check ../sha256.txt'
+
+      - name: Build flash ISOs
+        run: nix develop -c python3 -m fevm_flash_iso pkg -o dist
+
+      - name: Derive tag and assemble release artifacts
+        id: derive
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          bios_isos=(dist/*_FLASH_BIOS_V*.iso)
+          ec_isos=(dist/*_FLASH_EC_V*.iso)
+          if (( ${#bios_isos[@]} != 1 )) || (( ${#ec_isos[@]} != 1 )); then
+            echo "::error::expected exactly 1 BIOS ISO and 1 EC ISO in dist/, got ${#bios_isos[@]} BIOS and ${#ec_isos[@]} EC" >&2
+            exit 1
+          fi
+
+          bios_name="$(basename "${bios_isos[0]}")"
+          ec_name="$(basename "${ec_isos[0]}")"
+
+          model="${bios_name%%_*}"
+          bver="${bios_name%.iso}"; bver="${bver##*_V}"
+          ever="${ec_name%.iso}"; ever="${ever##*_V}"
+          tag="${model,,}-bios${bver}-ec${ever}"
+
+          (cd dist && sha256sum -- *.iso) > dist/SHA256SUMS
+
+          {
+            echo "# ${model} 刷写固件发布"
+            echo
+            echo "- 机型: \`${model}\`"
+            echo "- BIOS 版本: \`${bver}\`"
+            echo "- EC 版本: \`${ever}\`"
+            echo
+            echo "## ⚠️ 安全提示 (刷写前必读)"
+            echo
+            echo "- ISO 引导后 **5 秒倒计时自动刷写**；BIOS 盘确认时按 \`y\`。"
+            echo "- EC 盘刷完**自动关机**，必须拔电源等 10 秒再通电。"
+            echo "- 刷写有**变砖风险**，请先确认机型与版本。"
+            echo
+            echo "## 固件来源 (PROVENANCE.md 全文)"
+            echo
+            echo "---"
+            echo
+            cat PROVENANCE.md
+            echo
+            echo "---"
+            echo
+            echo "产物由本仓库 CLI 对固件包完成校验并构建, 经产物自检 (内嵌副本哈希比对) 后发布。"
+          } > notes.md
+
+          {
+            echo "tag=${tag}"
+            echo "title=${model} BIOS V${bver} / EC V${ever}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.derive.outputs.tag }}
+          TITLE: ${{ steps.derive.outputs.title }}
+        run: |
+          set -euo pipefail
+
+          isos=(dist/*.iso)
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${isos[@]}" dist/SHA256SUMS --clobber
+            gh release edit "$TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "$TITLE" --notes-file notes.md "${isos[@]}" dist/SHA256SUMS
+          fi
